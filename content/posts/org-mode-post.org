@@ -1,0 +1,25 @@
++++
+categories = ['Development', 'VIM']
+date = '2012-04-06'
+title = 'Org mode post'
++++
+
+* This is an org file
+
+Lets see if hugo can render it
+
+We can render python code with 
+
+#+begin_src python
+import torch
+
+def neural_style_transfer(image_1, image_2):
+    pass
+#+end_src
+
+Can ir render latex??
+
+#+begin_latex
+f(x) = \sum_{i=0}^{x} i^x
+#+end_latex
+
