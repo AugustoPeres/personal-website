@@ -4,3 +4,6 @@
 [submodule "quickstart/themes/terminal"]
 	path = quickstart/themes/terminal
 	url = https://github.com/panr/hugo-theme-terminal.git
+[submodule "quickstart/themes/gists"]
+	path = quickstart/themes/gists
+	url = https://github.com/dmachard/hugo-theme-gists.git
