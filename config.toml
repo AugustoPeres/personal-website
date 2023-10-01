@@ -1,7 +1,7 @@
-baseURL = 'https://augustoperes.github.io/'
+baseURL = 'https://augustoperes.github.io/personal-website/'
 languageCode = 'en-us'
-title = 'My New Hugo Site'
 theme = 'terminal'
+canonifyURLs= true
 
 paginate = 5
  
