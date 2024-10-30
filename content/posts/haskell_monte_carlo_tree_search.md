@@ -175,4 +175,53 @@ book.
 
 # Connect Four implementation
 
+After defining `Adversarial Game` class we can start to implement games deriving
+from it with assurances that later on the algorithms we design will work for
+them. In this particular case I made a very simple connect four implementation
+is Haskell:
 
+```haskell
+data Player = X | O deriving (Eq, Show)
+
+type Action = Int
+type Board = Int -> Int -> Maybe Player
+
+data ConnectFour = ConnectFour
+  { board       :: Board
+  , player      :: Player
+  , piecesInCol :: Int -> Int
+  }
+```
+
+Lets break this down. First we create a new algebraic data type
+`Player`. Basically this states that a `Player` is either player `X` or player
+`O`. This is a common way to define data types in Haskell. In fact, the boolean
+data type is defined as `data Bool = True | False`.
+
+Next we create a new type synonym where an action is simply an
+integer. Similarly, we create a new type synonym `Board = Int -> Int -> Maybe
+Player`, this states that a board is a function receiving two integer and
+returning `Maybe Player`. How do we use this?  Well, if a square in connect four
+is unoccupied then the board function returns `Nothing` otherwise it returns
+`Just X` or `Just O` depending on the player that occupies that board.
+
+Finally, we define out connect `ConnectFour` game. This is a simple data type
+with records:
+
+* `board`: Tracks the state of the board
+* `player`: Tracks the current player
+* `piecesInCol :: Int -> Int`. This is a simple helper function to help us track
+  how many pieces are in a a given column of the board.
+
+If you are unfamiliar with Haskell, this is will become more clear when we see
+how to define the initial game state and the other functions. The initial game
+can be trivially defined as:
+
+```haskell
+initialGame :: ConnectFour
+initialGame = ConnectFour (\_ _ -> Nothing) X (\_ -> 0)
+```
+
+As we can see, the initial game is simply a `Board` that always return `Nothing`
+because everything is empty. The starting player is `X` and `piecesInCol` is a
+function that always return `0`.
