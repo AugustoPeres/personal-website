@@ -1,7 +1,18 @@
 +++
 title = "Monte Carlo Tree Search in Haskell"
 author = ["Augusto"]
-description = """A simple implementation of the Monte Carlo Tree Search algorithm in Haskell
+description = """
+A simple implementation of the Monte Carlo Tree Search algorithm in Haskell
+
+```haskell
+mctsIteration :: (AdversarialGame g a p, Eq a) => MCTSAgent g a p
+                                               -> State StdGen (MCTSAgent g a p)
+mctsIteration agent = (selection agent)
+                    >>= (return . expansion)
+                    >>= simulation
+                    >>= (return . backpropagation)
+```
+
   """
 draft = false
 tags = ["haskell", "AI"]
@@ -225,3 +236,474 @@ initialGame = ConnectFour (\_ _ -> Nothing) X (\_ -> 0)
 As we can see, the initial game is simply a `Board` that always return `Nothing`
 because everything is empty. The starting player is `X` and `piecesInCol` is a
 function that always return `0`.
+
+We are now fully ready to make `ConnectFour` an element of the `AdversarialGame`
+type class. Here we will show only the `step` and `availableActions` functions,
+for the full code please refer to my
+[github](https://github.com/AugustoPeres/haskell-AI):
+
+```haskell
+instance AdversarialGame ConnectFour Action Player where
+  step g a =
+    if not (a `elem` availableActions g)
+    then g
+    else g { board = newBoard
+           , player = nextPlayer cPlayer
+           , piecesInCol = newPiecesInCol}
+    where newBoard c r = if c == a && r == row
+                         then Just cPlayer
+                         else (board g) c r
+          newPiecesInCol c = if c == a
+                             then (piecesInCol g c) + 1
+                             else (piecesInCol g c)
+          row = (piecesInCol g) a
+          cPlayer = player g
+
+  availableActions g = filter (\x -> (piecesInCol g) x <= 5) [0..6]
+```
+
+The `step` function does the following: If the given action is not available,
+then we return the game unchanged. Otherwise we return a new instance of
+`ConnectFour` where we changed the `board` function to now return, at the
+position where the piece is places, the current player and we changed the
+`piecesInCol` to return, for the column where the piece was placed, the previous
+number of pieces in that column plus 1.
+
+Because `ConnectFour` is now an element of the `AdversarialGame` type class we
+can, without implementing, do something like:
+
+```haskell
+ghci> s = playRandomAction initialGame >>= playRandomAction >>= playRandomAction
+ghci> fst $ runState s (mkStdGen 1)
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ X O _ X _ 
+current player O
+```
+
+Great, we are now ready to start implementing the Monte Carlo Tree Search
+algorithm AI
+
+# Monte Carlo Tree Search algorithm
+
+We will not dive into an explanation of the MCTS algorithm here. This has been
+extensively covered by several different resources online. As such, we will
+focus more in its implementation in Haskell.
+
+## The tree class
+
+Here we will focus on implementing the tree structure on which we can later
+build the MCTS algorithm. I always consider this to be a great example of how
+easy is to define mathematical abstract structures using Haskell.
+
+First, lets think about what type of tree we want to build. Well, we want the
+nodes to store the current game states, and we want the edges to store the
+actions that lead to that game state. In Haskell this can be achieved in the
+one-liner:
+
+```haskell
+data Tree crumb value = Leaf value | Node value [(crumb, Tree crumb value)] deriving (Eq, Show, Ord)
+```
+
+The previous line states that a `Tree` is either a `Leaf` storing a given value
+or it is a `Node` storing a value and a list of tuples `(crumb, Tree)` that are
+its list of children and the values of the edges that link to those
+children. From this definition we can already do lots of powerful things. For
+one, we can already create trees:
+
+```haskell
+tree = Node 2 [("a", Leaf 1), ("b", Node 1 [("c", Leaf 0)])]
+-- This is the tree:
+--          Node 2
+--          /     \
+--       "a"       "b"
+--       /           \
+--    Leaf 1        Node 1
+--                      |
+--                    "c"
+--                      |
+--                   Leaf 0
+```
+
+And, using this powerful recursive definition we can trivially implement
+functions that, for example apply a given function to all values of the node:
+
+```haskell
+applyFunction :: Tree crumb value -> (value -> b) -> Tree crumb b
+applyFunction (Leaf v) f   = Leaf (f v)
+applyFunction (Node v c) f =
+  Node (f v) (map (\(crum, tree) -> (crum, applyFunction tree f)) c)
+```
+
+Basically the function goes down the tree applying f to the values in the
+nodes. For example:
+
+```haskell
+applyFunction tree (+5)
+-- yileds:
+--          Node 7
+--          /      \
+--       "a"        "b"
+--       /            \
+--    Leaf 6        Node 6
+--                     |
+--                   "c"
+--                     |
+--                  Leaf 5
+```
+
+## The zipper class
+
+But wait!!! In MCTS algorithms there is a backup step where, after playing
+random games from a `Leaf` node we must backup over the tree and update the win
+rations of all its parents. But, how can we do this recursively if, following
+the above definition we can only go down the tree?
+
+The answer is to use zippers! For a much better introduction to zippers please
+refer to [this chapter](https://learnyouahaskell.com/zippers) in the [Learn You
+a Haskell for great good](https://learnyouahaskell.com/chapters) book. But
+essentially, zippers are a list of bread-crumbs that we leave behind when going
+down the tree that later allow us to go back up the tree again. Or, in Haskell:
+
+```haskell
+data Crumb crumb value = Crumb value crumb [(crumb, Tree crumb value)] deriving (Eq, Show, Ord)
+type Zipper crumb value = (Tree crumb value, [Crumb crumb value])
+```
+
+Basically a `Crumb` stores the value of the parent, the value of the edge
+from that parent to the children when we go down the tree, and the remaining
+children of the parent node. For example, for the previous defined tree, if we
+go down using edge `"a"` we get the zipper:
+
+```haskell
+(Leaf 1, Crumb 2 "a" [Node 1 [("c", Leaf 1)]])
+```
+
+Using this we can easily go up the tree maintaining its original structure
+again. In fact, lets see an example for this short tree library:
+
+```haskell
+goUpWith :: Zipper crumb value -> (value -> value -> value) -> Zipper crumb value
+goUpWith z@(_, []) _ = z
+goUpWith (tree, (Crumb value crum children):xs) f =
+  (Node resultingValue ((crum, tree):children), xs) 
+  where resultingValue = f (getRootValue tree ) value 
+```
+
+This function goes up the zipper while applying a function with signature `value
+-> value -> value` to the nodes in the tree. If the crumbs are empty we return
+the zipper. Otherwise we go up one step while applying the function. For
+example:
+
+```haskell
+zipper = (Leaf 1, Crumb 2 "a" [Node 1 [("c", Leaf 1)]])
+goUpWith zipper (-)
+-- yields:
+-- (Node 1 [("a", Leaf 1), ("b", Node 1 [("c", Leaf 0)])], [])
+```
+
+This function will allows to easily implement the backup step in the MCTS algorithm.
+
+We will not show here the entire implementation of these function. Instead we
+just give the type signatures:
+
+```haskell
+makeZipper :: Tree crumb value -> Zipper crumb value
+makeTree :: value -> Tree crumb value
+followDirection :: (Eq crumb) => Zipper crumb value -> crumb -> Zipper crumb value
+goUpWith :: Zipper crumb value -> (value -> value -> value) -> Zipper crumb value
+goToTopWith :: Zipper crumb value -> (value -> value -> value) -> Zipper crumb value
+addChildren :: Zipper crumb value -> [(crumb, value)] -> Zipper crumb value
+followToBottomWith :: (Eq crumb, Ord b) => Zipper crumb value -> (value -> value -> b) -> (value -> Bool) -> State StdGen (Zipper crumb value)
+getRootValue :: Tree crumb value -> value
+getChildren :: Tree crumb value -> [(crumb, Tree crumb value)]
+updateRootValue :: Tree crumb value -> value -> Tree crumb value
+```
+
+## The MCTS algorithm
+
+Our type synonyms and algebraic data types:
+
+```haskell
+type MCTSNode g = (g, Int, Int) -- (current game state, wins, n simulations)
+
+data MCTSAgent g a p =
+  MCTSAgent { zipper         :: Zipper a (MCTSNode g)
+            , player         :: p
+            , numSimulations :: Int } deriving (Show)
+
+```
+
+Essentially, a tree node will consist of a game state, the number of wins from
+that node and the number of simulations from that node. A `MCTSAgent` will store
+the game tree (actually the zipper), the player for which it is playing and the
+number of simulations to run when reaching a child node.
+
+The first step in each MCTS iteration is to go down the tree selecting the best
+child according to the upper confidence bound (UCB). Using our zipper library we
+can implement this using:
+
+```haskell
+selection :: (AdversarialGame g a p, Eq a) => MCTSAgent g a p -> State StdGen (MCTSAgent g a p)
+selection agent =
+  followToBottomWith (zipperAgent) f stoppage >>= (\z -> return $ agent { zipper = z })
+  where f parent@(gameState, pWins, pVisits) child@(gameState', cWins, cVisits) =
+          if currentPlayer gameState == player agent
+          then ucb parent child
+          else ucb (gameState, pVisits - pWins, pVisits) (gameState', cVisits - cWins, cWins)
+        zipperAgent@(tree, _) = zipper agent
+        stoppage (gameState, _, _) = length (availableActions gameState) /= length (getChildren tree)
+		
+
+ucb :: MCTSNode g -> MCTSNode g -> Float
+ucb (_, _, p_visits) (_, c_wins, c_visits)
+  | c_visits == 0 = 1 / 0
+  | otherwise =
+      let c = sqrt 2
+          exploration = c * sqrt ((log $ fromIntegral p_visits) / fromIntegral c_visits)
+          exploitation = fromIntegral c_wins / fromIntegral c_visits
+      in exploration + exploitation
+```
+
+Essentially this functions uses the zipper functions defined in the previous
+section and the UCB to go down until we find a node that can still be
+expanded. Additionally notice how, in the function type signature, we do not
+specify that this function is implemented for the `ConnectFour` data type,
+instead we only specified that `g` needs to be an element of `AdversarialGame`
+type class.
+
+The next step in a MCTS iteration is to, from the previous reached node, expand it:
+
+```haskell
+expansion :: (AdversarialGame g a p, Eq a) => MCTSAgent g a p -> MCTSAgent g a p
+expansion agent =
+  let z@(tree, _) = zipper agent
+      (gameState, _, _) = getRootValue (fst z)
+  in case availableActions gameState \\ map fst (getChildren tree) of
+       []   -> agent
+       a:_ -> agent {zipper = followDirection (addChildren z [(a, (step gameState a, 0, 0))]) a}
+```
+
+This function checks if there are actions in that node that can be taken. If
+that is the case it adds a child node to it and goes down the tree to that node.
+
+Next we simulate random games from that node:
+
+```haskell
+simulation :: (AdversarialGame g a p, Eq a) => MCTSAgent g a p -> State StdGen (MCTSAgent g a p)
+simulation agent =
+  let z@(tree, crumbs) = zipper agent
+      (gameState, _, _) = getRootValue (fst z)
+      playerAgent = player agent
+      simulations = numSimulations agent
+      randomGames = replicateM simulations (playRandomGame gameState)
+      wonGames = fmap (\games -> sum $ map f games) randomGames
+      f = \game -> case winner game of
+                     Just w | w == playerAgent -> 1
+                     Just _                    -> -1
+                     _                         -> 0
+  in if winner gameState == (Just $ player agent)
+     then return $ agent { zipper = (updateRootValue tree (gameState, 1, 1), crumbs)}
+     else wonGames >>= (\wg -> return $ agent { zipper = (updateRootValue tree (gameState, wg, simulations), crumbs) })
+```
+
+Here we simulate random games from a `Leaf` node. The games won are scored with
+`1`, ties are scored with `0` and losses are scored with `0`. We update the win
+ration for that leaf are return the agent with its zipper updated.
+
+Finally, we need to go up the tree to propagate this win ration:
+
+```haskell
+backpropagation :: MCTSAgent g a p -> MCTSAgent g a p
+backpropagation agent =
+  let z@(tree, _) = zipper agent
+      (_, wins, sims) = getRootValue tree
+      f = \(_, _, _) (gameState, a, b) -> (gameState, a + wins, b + sims)
+      newZipper = goToTopWith z f
+  in agent { zipper = newZipper }
+```
+
+Here we simply use the `goTotopwith` presented before to go all the way up the
+tree while updating the win rates of all nodes.
+
+We are now fully prepared to define a MCTS iteration:
+
+```haskell
+mctsIteration :: (AdversarialGame g a p, Eq a) => MCTSAgent g a p -> State StdGen (MCTSAgent g a p)
+mctsIteration agent = (selection agent) >>= (return . expansion) >>= simulation >>= (return . backpropagation)
+```
+
+And from this we can define a function to take an action from any given game
+state:
+
+```haskell
+takeAction :: (AdversarialGame g a p, Eq p, Eq a) => g -> Int -> State StdGen a
+takeAction gameState numIterations =
+  get >>= (\gen ->
+          let agent = MCTSAgent { zipper = makeZipper (makeTree (gameState, 0, 0)),
+                                  player = currentPlayer gameState,
+                                  numSimulations = 100 }
+              iteratedAgent = foldM (\ag _ -> mctsIteration ag) agent [1..numIterations]
+              (agent', newGen) = runState iteratedAgent gen
+              (tree, _) = zipper agent'
+              f = (\(_, w, n) -> fromIntegral w / fromIntegral n) . getRootValue . snd
+              maxChildren = maxValuesBy (getChildren tree) f
+              (newGen', action) = choice (map fst maxChildren) newGen
+          in put newGen' >> return action)
+```
+
+This is it. This is a MCTS implementation in Haskell from scratch. If you want
+to play against the AI you can clone my repository. There you have instructions
+to run the code. Also, if you want this for your own game recall that you must
+only implement it as a member of the `AdversarialGame` type class and you are
+good to go.
+
+ Here we have a sample game play (I am player X).
+
+```bash
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+current player X
+
+Available actions: 
+[0,1,2,3,4,5,6]
+Enter your action (as an integer): 
+4
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ X _ _ 
+current player O
+
+AI thinking...
+AI chose action: 3
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ O X _ _ 
+current player X
+
+Available actions: 
+[0,1,2,3,4,5,6]
+Enter your action (as an integer): 
+3
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ X _ _ _ 
+_ _ _ O X _ _ 
+current player O
+
+AI thinking...
+AI chose action: 0
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ X _ _ _ 
+O _ _ O X _ _ 
+current player X
+
+Available actions: 
+[0,1,2,3,4,5,6]
+Enter your action (as an integer): 
+4
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ X X _ _ 
+O _ _ O X _ _ 
+current player O
+
+AI thinking...
+AI chose action: 1
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ X X _ _ 
+O O _ O X _ _ 
+current player X
+
+Available actions: 
+[0,1,2,3,4,5,6]
+Enter your action (as an integer): 
+2
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ X X _ _ 
+O O X O X _ _ 
+current player O
+
+AI thinking...
+AI chose action: 2
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ O X X _ _ 
+O O X O X _ _ 
+current player X
+
+Available actions: 
+[0,1,2,3,4,5,6]
+Enter your action (as an integer): 
+4
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ X _ _ 
+_ _ O X X _ _ 
+O O X O X _ _ 
+current player O
+
+AI thinking...
+AI chose action: 4
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ O _ _ 
+_ _ _ _ X _ _ 
+_ _ O X X _ _ 
+O O X O X _ _ 
+current player X
+
+Available actions: 
+[0,1,2,3,4,5,6]
+Enter your action (as an integer): 
+2
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ O _ _ 
+_ _ X _ X _ _ 
+_ _ O X X _ _ 
+O O X O X _ _ 
+current player O
+
+AI thinking...
+AI chose action: 3
+Game Over! The winner is: O
+_ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ 
+_ _ _ _ O _ _ 
+_ _ X O X _ _ 
+_ _ O X X _ _ 
+O O X O X _ _ 
+```
+
+There you have it! Not a brilliant game on my part but the AI can both prevent
+me from winning and win itself.
