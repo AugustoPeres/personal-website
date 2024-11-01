@@ -30,9 +30,10 @@ have always found it fascinating and, in fact used it for my master thesis. A
 gamble that luckily worked out fine.
 
 However, after finishing my degree and finding a job as machine learning
-engineer I no longer had the opportunity to use very often. As such, out of
+engineer I no longer had the opportunity to use it very often. As such, out of
 nostalgia I decided to learn it again and use it to implement a Monte Carlo Tree
-Search (MCTS) algorithm to play, perfect information zero sum adversarial games.
+Search (MCTS) algorithm to play, perfect information, zero sum, adversarial
+games.
 
 In this blog post we go over my implementation of the algorithm as well as other
 fun and unique things regarding the Haskell programming language.
@@ -44,7 +45,7 @@ The full implementation can be found on my
 
 ## What are type classes
 
-Before diving into the algorithm we first need a the game that will be
+Before diving into the algorithm we first need the game that will be
 played. However, because I want my MCTS algorithm to work for any adversarial
 perfect information zero sum game I am going to define a `type class` in
 haskell.
@@ -52,7 +53,7 @@ haskell.
 `Type classes` in haskell are different from classes in python. They do not
 represent objects. Instead they simply ensure that certain operations will exist
 for data types of that class. A basic example of type classes is the `Show` type
-class. This type class ensure that, for any data type of that class a method
+class. This type class ensure that, for any data type of that class a function
 will exist that converts it to a string:
 
 ```haskell
@@ -82,8 +83,8 @@ joinStrings 1 True -- This yeilds "1 True"
 ## Our type class
 
 Our type class will ensure that, for every game deriving it, the necessary
-functions to write the MCTS algorithm and the game loops will exist. The code
-for it is presented below:
+functions to write the MCTS algorithm and the game loops will exist. The class
+is defined below:
 
 ```haskell
 class (Eq p) =>
@@ -122,8 +123,8 @@ class (Eq p) =>
 
 Lets break down this type class:
 
-* `step :: g -> a -> a`: This functions receives a game and an action. Applies
-  the action to the game and returns the resulting game.
+* `step :: g -> a -> a`: This functions receives a game and an action. Returns
+  the result of applying that action to the game.
 * `availableActions :: g -> [a]`: This function receives a game and returns a
   list of the legal actions for that game state.
 * `currentPlayer :: g -> p`: This function return the current player for a given
@@ -154,7 +155,7 @@ as a tuple.
 This can quickly become hard to manage. Enter the `State` monad!! Here, `State
 StdGen g` is basically a wrapper for `StdGen -> (g, StdGen)`. That is, the state
 monad is an abstraction for a function that receives a state (a seed for random
-number generation) and returns a game and a new state.
+number generation) and returns a game and a new state (a new random seed).
 
 Therefore, using the monad properties we can do very powerful things like:
 
@@ -176,20 +177,19 @@ using different starting seeds.
 Monads are notorious for being incredibly confusing. Therefore, if you did not
 understand this, do not linger here. Additionally, notice how those functions
 are already implemented using just the previously defined functions of the
-class. As such, for all games we do not need to bother with them. We need only
-to implement the functions that are not yet implemented.
+class. As such, for all games we do not need to bother with them.
 
 For a better explanation of this topic take a look at [this
 chapter](https://learnyouahaskell.com/for-a-few-monads-more) of the [Learn You a
-Haskell for Great Good!](https://learnyouahaskell.com/for-a-few-monads-more)
+Haskell for Great Good!](https://learnyouahaskell.com/)
 book.
 
 # Connect Four implementation
 
 After defining `Adversarial Game` class we can start to implement games deriving
-from it with assurances that later on the algorithms we design will work for
-them. In this particular case I made a very simple connect four implementation
-is Haskell:
+from it with assurances that later on the algorithms we design will work. In
+this particular case I made a very simple connect four implementation is
+Haskell:
 
 ```haskell
 data Player = X | O deriving (Eq, Show)
@@ -214,7 +214,8 @@ integer. Similarly, we create a new type synonym `Board = Int -> Int -> Maybe
 Player`, this states that a board is a function receiving two integer and
 returning `Maybe Player`. How do we use this?  Well, if a square in connect four
 is unoccupied then the board function returns `Nothing` otherwise it returns
-`Just X` or `Just O` depending on the player that occupies that board.
+`Just X` or `Just O` depending on the player that occupies that position on the
+board.
 
 Finally, we define out connect `ConnectFour` game. This is a simple data type
 with records:
@@ -222,7 +223,7 @@ with records:
 * `board`: Tracks the state of the board
 * `player`: Tracks the current player
 * `piecesInCol :: Int -> Int`. This is a simple helper function to help us track
-  how many pieces are in a a given column of the board.
+  how many pieces are in a given column of the board.
 
 If you are unfamiliar with Haskell, this is will become more clear when we see
 how to define the initial game state and the other functions. The initial game
@@ -237,9 +238,9 @@ As we can see, the initial game is simply a `Board` that always return `Nothing`
 because everything is empty. The starting player is `X` and `piecesInCol` is a
 function that always return `0`.
 
-We are now fully ready to make `ConnectFour` an element of the `AdversarialGame`
-type class. Here we will show only the `step` and `availableActions` functions,
-for the full code please refer to my
+We are now ready to make `ConnectFour` an element of the `AdversarialGame` type
+class. Here we will show only the `step` and `availableActions` functions, for
+the full code please refer to my
 [github](https://github.com/AugustoPeres/haskell-AI):
 
 ```haskell
@@ -265,12 +266,12 @@ instance AdversarialGame ConnectFour Action Player where
 The `step` function does the following: If the given action is not available,
 then we return the game unchanged. Otherwise we return a new instance of
 `ConnectFour` where we changed the `board` function to now return, at the
-position where the piece is places, the current player and we changed the
+position where the piece is placed, the current player and we changed the
 `piecesInCol` to return, for the column where the piece was placed, the previous
 number of pieces in that column plus 1.
 
 Because `ConnectFour` is now an element of the `AdversarialGame` type class we
-can, without implementing, do something like:
+can do something like:
 
 ```haskell
 ghci> s = playRandomAction initialGame >>= playRandomAction >>= playRandomAction
@@ -359,8 +360,8 @@ applyFunction tree (+5)
 
 But wait!!! In MCTS algorithms there is a backup step where, after playing
 random games from a `Leaf` node we must backup over the tree and update the win
-rations of all its parents. But, how can we do this recursively if, following
-the above definition we can only go down the tree?
+ratios of all its parents. But, how can we do this recursively if, following the
+above definition we can only go down the tree?
 
 The answer is to use zippers! For a much better introduction to zippers please
 refer to [this chapter](https://learnyouahaskell.com/zippers) in the [Learn You
@@ -511,10 +512,10 @@ simulation agent =
 ```
 
 Here we simulate random games from a `Leaf` node. The games won are scored with
-`1`, ties are scored with `0` and losses are scored with `0`. We update the win
-ration for that leaf are return the agent with its zipper updated.
+`1`, ties are scored with `0` and losses are scored with `-1`. We update the win
+ratio for that leaf and return the agent with its zipper updated.
 
-Finally, we need to go up the tree to propagate this win ration:
+Finally, we need to go up the tree to propagate this win ratio:
 
 ```haskell
 backpropagation :: MCTSAgent g a p -> MCTSAgent g a p
@@ -557,7 +558,7 @@ takeAction gameState numIterations =
 
 This is it. This is a MCTS implementation in Haskell from scratch. If you want
 to play against the AI you can clone my repository. There you have instructions
-to run the code. Also, if you want this for your own game recall that you must
+to run the code. Also, if you want this for your own game, recall that you must
 only implement it as a member of the `AdversarialGame` type class and you are
 good to go.
 
